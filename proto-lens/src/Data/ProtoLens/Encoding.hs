@@ -31,6 +31,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (guard)
 import Data.Attoparsec.ByteString as Parse
 import Data.Bool (bool)
+import Data.List (foldl')
 import Data.Monoid ((<>))
 import Data.Proxy (Proxy(Proxy))
 import Data.Text.Encoding (encodeUtf8, decodeUtf8')
@@ -78,6 +79,22 @@ parseMessage end = (Parse.<?> T.unpack (messageName (Proxy @msg))) $ do
                             !msg' <- parseAndAddField msg field tv
                                       <?> fieldDescriptorName field
                             loop msg' $! Map.delete tag unsetFields
+
+parseMessageDelimited :: Message msg => Parser msg
+parseMessageDelimited = do
+    -- Unfortunately attoparsec doesn't provide a way to run a Parser on a known
+    -- length prefix of the remaining input.
+    payload <- getVarInt >>= Parse.take . fromIntegral
+    parseInnerResult True $ parse (parseMessage endOfInput) payload
+
+  where
+    parseInnerResult loop = \case
+        Fail _ ctxs msg -> foldl' (<?>) (fail msg) ctxs
+        Done _ r -> return r
+        Partial k ->
+            if loop
+            then parseInnerResult False $ k mempty
+            else error "parseMessageDelimited: got unexpected Partial"
 
 -- | Decode a message from its wire format.  Throws an error if the decoding
 -- fails.
